@@ -6,11 +6,11 @@ on:
       app_name:
         description: "Nama aplikasi"
         required: true
-        default: "PXY APP"
+        default: "PXY ZIPER"
       package_name:
         description: "Package aplikasi"
         required: true
-        default: "com.pxy.app"
+        default: "com.pxy.ziper"
 
 permissions:
   contents: read
@@ -18,59 +18,72 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      - name: Prepare Android SDK
+      - name: Install Android SDK
         run: |
           sdkmanager "platforms;android-35" \
             "build-tools;35.0.0"
           yes | sdkmanager --licenses
 
-      - name: Check ZIP
+      - name: Extract website ZIP
         run: |
           test -f pxy_.zip || {
-            echo "File pxy_.zip tidak ditemukan!"
+            echo "ERROR: pxy_.zip tidak ditemukan"
             exit 1
           }
+
+          mkdir website_source
           unzip -q pxy_.zip -d website_source
+
           find website_source -type f -name index.html
 
-      - name: Build Android project
+      - name: Create Android project
         env:
           APP_NAME: ${{ inputs.app_name }}
           PACKAGE_NAME: ${{ inputs.package_name }}
         run: |
           python3 - <<'PY'
-          import os, re, shutil
+          import os
+          import re
+          import shutil
           from pathlib import Path
           from xml.sax.saxutils import escape
 
-          pkg = os.environ["PACKAGE_NAME"]
           name = os.environ["APP_NAME"]
+          pkg = os.environ["PACKAGE_NAME"]
 
           if not re.fullmatch(
-              r"[a-zA-Z][a-zA-Z0-9_]*"
-              r"(\.[a-zA-Z][a-zA-Z0-9_]*)+", pkg
+              r"[A-Za-z][A-Za-z0-9_]*"
+              r"(\.[A-Za-z][A-Za-z0-9_]*)+", pkg
           ):
               raise SystemExit("Package name tidak valid")
 
           root = Path("android")
           src = Path("website_source")
+
           pages = list(src.rglob("index.html"))
           if not pages:
-              raise SystemExit("ZIP harus berisi index.html")
+              raise SystemExit(
+                  "ZIP harus berisi file index.html"
+              )
 
           webroot = pages[0].parent
           assets = root / "app/src/main/assets/www"
@@ -79,23 +92,55 @@ jobs:
           for item in webroot.iterdir():
               dest = assets / item.name
               if item.is_dir():
-                  shutil.copytree(item, dest, dirs_exist_ok=True)
+                  shutil.copytree(
+                      item, dest, dirs_exist_ok=True
+                  )
               else:
                   shutil.copy2(item, dest)
+
+          # Cari logo icon.png, lalu logo.png
+          icons = list(src.rglob("icon.png"))
+          if not icons:
+              icons = list(src.rglob("logo.png"))
+
+          icon_xml = ""
+          if icons:
+              icon_dir = (
+                  root / "app/src/main/res/drawable-nodpi"
+              )
+              icon_dir.mkdir(
+                  parents=True, exist_ok=True
+              )
+              shutil.copy2(
+                  icons[0],
+                  icon_dir / "ic_launcher.png"
+              )
+              icon_xml = (
+                  'android:icon="@drawable/ic_launcher" '
+                  'android:roundIcon="@drawable/ic_launcher"'
+              )
+              print("Logo APK ditemukan:", icons[0])
+          else:
+              print(
+                  "Logo tidak ditemukan; "
+                  "APK akan memakai ikon bawaan Android"
+              )
 
           java_dir = root / (
               "app/src/main/java/" + pkg.replace(".", "/")
           )
           java_dir.mkdir(parents=True, exist_ok=True)
 
-          (java_dir / "MainActivity.java").write_text("""
-          package PKG;
+          (java_dir / "MainActivity.java").write_text(
+              """package PKG;
           import android.app.Activity;
           import android.os.Bundle;
           import android.webkit.WebView;
           import android.webkit.WebSettings;
+
           public class MainActivity extends Activity {
-            @Override public void onCreate(Bundle b) {
+            @Override
+            public void onCreate(Bundle b) {
               super.onCreate(b);
               WebView w = new WebView(this);
               WebSettings s = w.getSettings();
@@ -103,10 +148,13 @@ jobs:
               s.setDomStorageEnabled(true);
               s.setAllowFileAccess(true);
               setContentView(w);
-              w.loadUrl("file:///android_asset/www/index.html");
+              w.loadUrl(
+                "file:///android_asset/www/index.html"
+              );
             }
           }
-          """.replace("PKG", pkg))
+          """.replace("PKG", pkg)
+          )
 
           (root / "settings.gradle").write_text("""
           pluginManagement {
@@ -117,8 +165,13 @@ jobs:
             }
           }
           dependencyResolutionManagement {
-            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-            repositories { google(); mavenCentral() }
+            repositoriesMode.set(
+              RepositoriesMode.FAIL_ON_PROJECT_REPOS
+            )
+            repositories {
+              google()
+              mavenCentral()
+            }
           }
           rootProject.name = "PXY"
           include(":app")
@@ -131,10 +184,14 @@ jobs:
           """)
 
           (root / "app/build.gradle").write_text("""
-          plugins { id 'com.android.application' }
+          plugins {
+            id 'com.android.application'
+          }
+
           android {
             namespace 'PKG'
             compileSdk 35
+
             defaultConfig {
               applicationId 'PKG'
               minSdk 23
@@ -146,14 +203,20 @@ jobs:
           """.replace("PKG", pkg))
 
           manifest = root / "app/src/main/AndroidManifest.xml"
-          manifest.parent.mkdir(parents=True, exist_ok=True)
-          manifest.write_text("""
+          manifest.parent.mkdir(
+              parents=True, exist_ok=True
+          )
+
+          manifest.write_text(f"""
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <uses-permission android:name="android.permission.INTERNET"/>
-            <application android:theme="@android:style/Theme.Material.Light.NoActionBar"
-              android:label="APPNAME"
+            <application
+              android:theme="@android:style/Theme.Material.Light.NoActionBar"
+              android:label="{escape(name)}"
+              {icon_xml}
               android:usesCleartextTraffic="true">
-              <activity android:name=".MainActivity"
+              <activity
+                android:name=".MainActivity"
                 android:exported="true">
                 <intent-filter>
                   <action android:name="android.intent.action.MAIN"/>
@@ -162,11 +225,13 @@ jobs:
               </activity>
             </application>
           </manifest>
-          """.replace("APPNAME", escape(name)))
+          """)
 
-          print("Proyek Android siap dibuat")
+          print("Proyek siap dibuild")
           PY
 
+      - name: Build APK
+        run: |
           cd android
           gradle assembleDebug
 
@@ -175,3 +240,4 @@ jobs:
         with:
           name: PXY-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
